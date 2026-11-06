@@ -1,0 +1,9 @@
+pypdf
+pypdfium2
+pillow
+winrt-windows-media-ocr
+winrt-windows-globalization
+winrt-windows-graphics-imaging
+winrt-windows-storage-streams
+winrt-windows-foundation
+winrt-windows-foundation-collections
