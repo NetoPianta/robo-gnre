@@ -7,8 +7,9 @@ Para cada PDF "GNRE <numero CT-e>.pdf" da pasta escolhida, acrescenta no D100
     |D195|GNRE|GUIA DE RECOLHIMENTO|
     |D197|MT10001002|NUMERO DA GUIA <n controle>||||<valor principal>||
 (credita so o VALOR PRINCIPAL da guia; juros e multa nao entram)
-Tipos aceitos: GNRE, DARE-SP (n = campo 09 Numero do DARE, valor = 09 Valor da Receita)
-e DAE-MG (n = N Documento, valor = linha "ICMS SERVICO DE TRANSPORTE").
+Tipos aceitos: GNRE, DARE-SP (n = campo 09 Numero do DARE, valor = 09 Valor da Receita),
+DAE-MG (n = N Documento, valor = linha "ICMS SERVICO DE TRANSPORTE") e
+GR-PR (n = Numero SEFA so com os digitos, valor = Valor da Receita).
 DAR-1 de MT e ignorado (so aparece no relatorio).
 Garante o cadastro 0460 (GNRE), recalcula os totalizadores (0990, D990, bloco 9)
 e salva um NOVO arquivo TXT (o original nao e alterado) + relatorio CSV.
@@ -16,10 +17,13 @@ e salva um NOVO arquivo TXT (o original nao e alterado) + relatorio CSV.
 Depois e so importar o TXT novo no PVA (Escrituracao Fiscal > Importar).
 """
 import csv
+import logging
 import os
 import re
 import sys
 from collections import OrderedDict, defaultdict
+
+logging.getLogger("pypdf").setLevel(logging.ERROR)   # sem avisos de PDF truncado na tela
 
 COD_OBS = "GNRE"
 TXT_OBS_PADRAO = "GUIA DE RECOLHIMENTO"
@@ -33,11 +37,20 @@ ORDEM_BLOCO0_APOS_0460 = ("0500", "0600", "0990")
 
 # ----------------------------------------------------------------- PDF
 def ler_pdf(caminho):
-    from pypdf import PdfReader
-    texto = ""
-    for pag in PdfReader(caminho).pages:
-        texto += (pag.extract_text() or "") + "\n"
-    return texto
+    """Texto do PDF. Se o pypdf nao conseguir (PDF truncado/corrompido), tenta pelo pdfium."""
+    try:
+        from pypdf import PdfReader
+        texto = ""
+        for pag in PdfReader(caminho).pages:
+            texto += (pag.extract_text() or "") + "\n"
+        return texto
+    except Exception:
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(caminho)
+        try:
+            return "\n".join(pdf[i].get_textpage().get_text_range() for i in range(len(pdf)))
+        finally:
+            pdf.close()
 
 
 def valor_float(s):
@@ -50,10 +63,12 @@ class EhDAR(Exception):
 
 # ----------------------------------------------------------------- tipo de documento
 def classificar(texto):
-    """GNRE, DARE-SP, DAE-MG, DAR-1 ou None (nao deu para saber)."""
+    """GNRE, DARE-SP, DAE-MG, GR-PR, DAR-1 ou None (nao deu para saber)."""
     t = _sem_acento(texto)
     if "dare-sp" in t or "dare sp" in t or "numero do dare" in t or "dare avulso" in t:
         return "DARE-SP"
+    if "guia de recolhimento do estado do parana" in t or "numero sefa" in t:
+        return "GR-PR"
     if "guia nacional" in t or "gnre" in t:
         return "GNRE"
     if "minas gerais" in t or re.search(r"arrecadacao estadual\s*-?\s*dae", t) or re.search(r"\bdae\b", t):
@@ -84,6 +99,9 @@ def extrair_guia(caminho, forcar_ocr=False):
         r = _dare_texto(texto)
         if r[0] and r[2] is not None:
             return r + (False, tipo)
+    if tipo == "GR-PR":
+        r = _grpr_texto(texto)
+        return r + (False, tipo)
 
     # 2) PDF escaneado / impresso como imagem: OCR do Windows
     topo = 0.7 if tipo == "DARE-SP" else 0.5
@@ -376,6 +394,19 @@ def _dae_texto(texto):
             valor_float(m2.group(1)) if m2 else None, _cte_do_texto(texto))
 
 
+# --- GR-PR (Guia de Recolhimento do Estado do Parana): numero = "Numero SEFA" (so os digitos);
+#     valor = "Valor da Receita (R$)" (sem multa, juros e acrescimo); CT-e = campo "Documento NF: 000000731"
+def _grpr_texto(texto):
+    m1 = re.search(r"N[uú]mero SEFA:?\s*(\d[\d.]{14,24}\d)", texto, re.I)
+    numero = re.sub(r"\D", "", m1.group(1)) if m1 else None
+    m2 = re.search(r"Valor da Receita \(R\$\)\s*([\d.]+,\d{2})", texto, re.I)
+    m3 = re.search(r"Valor Total \(R\$\)\s*([\d.]+,\d{2})", texto, re.I)
+    m4 = re.search(r"Documento\s*NF?\s*:?\s*0*(\d+)", texto, re.I)
+    cte = int(m4.group(1)) if m4 else _cte_do_texto(texto)
+    return (numero, valor_float(m3.group(1)) if m3 else None,
+            valor_float(m2.group(1)) if m2 else None, cte)
+
+
 def extrair_guia_texto(texto):
     # o PDF tem 1a e 2a via; usa so a primeira
     marcador = texto.find("Guia Nacional de Recolhimento", 40)
@@ -402,10 +433,17 @@ def extrair_guia_texto(texto):
     else:
         principal = valores[0] if valores else None
 
+    # CT-e: o "N Documento de Origem" (000000528) vale mais que o texto livre "ICMS CTE 528",
+    # que as vezes vem digitado errado na emissao da guia
     cte = None
-    m = re.search(r"CTE\s*(\d+)", primeira, re.I)
-    if m:
-        cte = int(m.group(1))
+    m = re.search(r"Documento de Origem\s*(\d{3,})", primeira)
+    origens = [m.group(1)] if m else re.findall(r"(?m)^\s*(00\d{7})\s*$", primeira)
+    if origens and int(origens[0]) > 0:
+        cte = int(origens[0])
+    else:
+        m = re.search(r"CTE\s*(\d+)", primeira, re.I)
+        if m:
+            cte = int(m.group(1))
     return controle, total, principal, cte
 
 
@@ -566,7 +604,8 @@ def processar(caminho_txt, pasta_pdf):
             with open(novo_csv, "w", encoding="utf-8-sig", newline="") as f:
                 w = csv.writer(f, delimiter=";")
                 w.writerow(["Arquivo", "CT-e", "N controle", "Valor ICMS", "Situacao"])
-                w.writerows(linhas_rel)
+                # n da guia como texto (="...") para o Excel nao cortar zeros nem mostrar 2,9E+15
+                w.writerows([[r[0], r[1], f'="{r[2]}"' if r[2] else "", r[3], r[4]] for r in linhas_rel])
             break
         except PermissionError:   # relatorio anterior aberto no Excel
             novo_csv = base + f" - relatorio GNRE ({tentativa + 1}).csv"
@@ -577,7 +616,7 @@ def processar(caminho_txt, pasta_pdf):
     por_tipo = defaultdict(int)
     for r in relatorio:
         if r[4].startswith("OK"):
-            por_tipo["DARE-SP" if "DARE-SP" in r[4] else "DAE-MG" if "DAE-MG" in r[4] else "GNRE"] += 1
+            por_tipo[next((t for t in ("DARE-SP", "DAE-MG", "GR-PR") if t in r[4]), "GNRE")] += 1
     detalhe = ", ".join(f"{k}: {v}" for k, v in sorted(por_tipo.items()))
     print(f"\nGuias lancadas: {ok} ({detalhe})   DAR-1 ignorados: {dar}   Pendentes (ver relatorio): {pend}")
     if corrigidos:

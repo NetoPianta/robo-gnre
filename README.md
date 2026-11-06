@@ -1,6 +1,6 @@
 # Robô lançador de GNRE no SPED Fiscal
 
-Lê os PDFs das guias (GNRE, DARE-SP e DAE-MG), encontra o CT-e de cada uma no TXT do SPED Fiscal
+Lê os PDFs das guias (GNRE, DARE-SP, DAE-MG e Guia de Recolhimento do Paraná), encontra o CT-e de cada uma no TXT do SPED Fiscal
 (EFD ICMS/IPI) e gera um TXT novo com os registros **D195** (GNRE – GUIA DE RECOLHIMENTO) e
 **D197** (ajuste **MT10001002**, "NUMERO DA GUIA ..." e o valor principal, sem juros/multa).
 DAR-1 de MT é ignorado e só aparece no relatório.
