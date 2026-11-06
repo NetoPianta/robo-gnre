@@ -25,6 +25,8 @@ from collections import OrderedDict, defaultdict
 
 logging.getLogger("pypdf").setLevel(logging.ERROR)   # sem avisos de PDF truncado na tela
 
+VERSAO = "2026-11-05b (GNRE, DARE-SP, DAE-MG, GR-PR)"
+
 COD_OBS = "GNRE"
 TXT_OBS_PADRAO = "GUIA DE RECOLHIMENTO"
 COD_AJUSTE = "MT10001002"
@@ -690,6 +692,7 @@ def diagnostico(arquivos):
 
 
 if __name__ == "__main__":
+    print(f"Robo GNRE - versao {VERSAO}")
     if len(sys.argv) >= 3 and sys.argv[1] == "--diag":
         diagnostico(sys.argv[2:])
     elif len(sys.argv) == 3 and sys.argv[1] == "--testar-ocr":
